@@ -2,8 +2,16 @@
 __pycache__/
 *.pyc
 .env
+*.egg-info/
+
+
+
 data/processed/
 .qdrant/
 mlruns/
+
+
+
+
 .ipynb_checkpoints/
 .vscode/
