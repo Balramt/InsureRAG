@@ -9,6 +9,11 @@ __pycache__/
 data/processed/
 .qdrant/
 mlruns/
+chunks/
+
+
+data/official/
+
 
 
 

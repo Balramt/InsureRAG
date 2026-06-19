@@ -1,149 +1,204 @@
 """
-Chunking utilities for InsureRAG ingestion.
+Generic chunking utilities for InsureRAG ingestion.
 
-This module converts cleaned Markdown document bodies into retrieval-ready
+This module converts ParsedDocument objects into retrieval-ready
 DocumentChunk objects.
 
-For the first MVP, we support section-based chunking for internal Markdown
-policy documents. Each "## Section ..." block becomes one chunk.
+Important:
+- This module does not know whether the original file was Markdown, HTML, PDF, or TXT.
+- File-format-specific parsing belongs in loaders.py.
+- This module only chunks clean ParsedDocument text.
 
-This module does not load files from disk, parse front matter, embed text,
-store vectors, or call an LLM.
+Pipeline:
+
+Raw file
+    ↓ loaders.py
+ParsedDocument
+    ↓ chunkers.py
+DocumentChunk
 """
 
-import re
-from pathlib import Path
+from pydantic import ValidationError
 
-from insurerag.ingestion.metadata import build_chunk_metadata
-from insurerag.schemas.chunk import DocumentChunk
-
-
-SECTION_HEADING_PATTERN = re.compile(
-    pattern=r"^##\s+(?P<section>.+?)\s*$",
-    flags=re.MULTILINE,
-)
+from insurerag.schemas.chunk import ChunkMetadata, DocumentChunk
+from insurerag.schemas.document import ParsedDocument
 
 
-def _slugify(value: str) -> str:
+DEFAULT_CHUNK_SIZE_WORDS = 220
+DEFAULT_CHUNK_OVERLAP_WORDS = 40
+
+
+def split_text_into_word_chunks(
+    text: str,
+    chunk_size_words: int = DEFAULT_CHUNK_SIZE_WORDS,
+    chunk_overlap_words: int = DEFAULT_CHUNK_OVERLAP_WORDS,
+) -> list[str]:
     """
-    Convert text into a simple lowercase identifier.
+    Split clean text into word-based retrieval chunks.
+
+    This function is file-format independent. It does not know whether
+    the text came from Markdown, HTML, PDF, or TXT.
 
     Args:
-        value: Raw text value.
+        text: Clean text from a ParsedDocument.
+        chunk_size_words: Maximum number of words per chunk.
+        chunk_overlap_words: Number of overlapping words between chunks.
 
     Returns:
-        Slugified identifier suitable for chunk IDs.
+        List of text chunks.
+
+    Raises:
+        ValueError: If chunk size or overlap configuration is invalid.
     """
 
-    value = value.lower().strip()
-    value = re.sub(r"[^a-z0-9]+", "-", value)
-    return value.strip("-")
+    if chunk_size_words <= 0:
+        raise ValueError("chunk_size_words must be greater than 0")
+
+    if chunk_overlap_words < 0:
+        raise ValueError("chunk_overlap_words cannot be negative")
+
+    if chunk_overlap_words >= chunk_size_words:
+        raise ValueError("chunk_overlap_words must be smaller than chunk_size_words")
+
+    words = text.split()
+
+    if not words:
+        return []
+
+    if len(words) <= chunk_size_words:
+        return [" ".join(words)]
+
+    chunks: list[str] = []
+    start_index = 0
+
+    while start_index < len(words):
+        end_index = min(start_index + chunk_size_words, len(words))
+        chunk_words = words[start_index:end_index]
+
+        chunks.append(" ".join(chunk_words))
+
+        if end_index == len(words):
+            break
+
+        start_index = end_index - chunk_overlap_words
+
+    return chunks
 
 
-def _extract_markdown_title(markdown_body: str) -> str | None:
+def _build_chunk_metadata(
+    document: ParsedDocument,
+    chunk_index: int,
+    chunk_count: int,
+) -> ChunkMetadata:
     """
-    Extract the first H1 title from a Markdown document body.
+    Build validated ChunkMetadata from ParsedDocument metadata.
 
     Args:
-        markdown_body: Markdown text without front matter.
+        document: ParsedDocument created by a loader.
+        chunk_index: 1-based index of the current chunk.
+        chunk_count: Total chunks created from the parent document.
 
     Returns:
-        First H1 title if available, otherwise None.
+        Validated ChunkMetadata object.
+
+    Raises:
+        ValueError: If ParsedDocument metadata is missing required fields.
     """
 
-    for line in markdown_body.splitlines():
-        stripped_line = line.strip()
+    raw_metadata = {
+        **document.metadata,
+        "parent_document_id": document.document_id,
+        "chunk_index": chunk_index,
+        "chunk_count": chunk_count,
+    }
 
-        if stripped_line.startswith("# ") and not stripped_line.startswith("## "):
-            return stripped_line
+    try:
+        return ChunkMetadata(**raw_metadata)
 
-    return None
-
-
-def split_markdown_by_sections(markdown_body: str) -> list[tuple[str, str]]:
-    """
-    Split a Markdown document body into section-level chunks.
-
-    Args:
-        markdown_body: Markdown text without front matter.
-
-    Returns:
-        A list of tuples:
-        - section heading,
-        - section text including the document title for context.
-    """
-
-    markdown_body = markdown_body.strip()
-    document_title = _extract_markdown_title(markdown_body)
-
-    section_matches = list(SECTION_HEADING_PATTERN.finditer(markdown_body))
-
-    if not section_matches:
-        return [("Full Document", markdown_body)]
-
-    sections: list[tuple[str, str]] = []
-
-    for index, match in enumerate(section_matches):
-        section_heading = match.group("section").strip()
-        section_start = match.start()
-
-        if index + 1 < len(section_matches):
-            section_end = section_matches[index + 1].start()
-        else:
-            section_end = len(markdown_body)
-
-        section_text = markdown_body[section_start:section_end].strip()
-
-        if document_title:
-            chunk_text = f"{document_title}\n\n{section_text}"
-        else:
-            chunk_text = section_text
-
-        sections.append((section_heading, chunk_text))
-
-    return sections
+    except ValidationError as error:
+        raise ValueError(
+            f"Invalid metadata for ParsedDocument '{document.document_id}'. "
+            f"Make sure loaders.py provides required metadata fields: "
+            f"source_name, jurisdiction, source_type, and language."
+        ) from error
 
 
-def chunk_markdown_document(
-    markdown_body: str,
-    front_matter: dict[str, str],
-    source_path: Path,
+def chunk_parsed_document(
+    document: ParsedDocument,
+    chunk_size_words: int = DEFAULT_CHUNK_SIZE_WORDS,
+    chunk_overlap_words: int = DEFAULT_CHUNK_OVERLAP_WORDS,
 ) -> list[DocumentChunk]:
     """
-    Convert a Markdown document body into validated DocumentChunk objects.
+    Convert one ParsedDocument into retrieval-ready DocumentChunk objects.
+
+    This function is generic. It works for parsed content from:
+    - Markdown
+    - HTML
+    - PDF
+    - TXT
 
     Args:
-        markdown_body: Markdown text without front matter.
-        front_matter: Metadata extracted from the Markdown document.
-        source_path: Local path to the raw Markdown source file.
+        document: ParsedDocument created by a loader.
+        chunk_size_words: Maximum number of words per chunk.
+        chunk_overlap_words: Number of overlapping words between chunks.
 
     Returns:
-        List of validated DocumentChunk objects.
+        List of DocumentChunk objects.
     """
 
-    section_chunks = split_markdown_by_sections(markdown_body)
-
-    document_abbreviation = front_matter["abbreviation"]
-    document_slug = _slugify(document_abbreviation)
+    text_chunks = split_text_into_word_chunks(
+        text=document.text,
+        chunk_size_words=chunk_size_words,
+        chunk_overlap_words=chunk_overlap_words,
+    )
 
     chunks: list[DocumentChunk] = []
 
-    for index, (section_heading, section_text) in enumerate(section_chunks, start=1):
-        section_slug = _slugify(section_heading)
+    for index, text_chunk in enumerate(text_chunks, start=1):
+        chunk_id = f"{document.document_id}_chunk_{index}"
 
-        chunk_id = f"{document_slug}-{section_slug}-{index}"
-
-        metadata = build_chunk_metadata(
-            front_matter=front_matter,
-            source_path=source_path,
-            section=section_heading,
+        metadata = _build_chunk_metadata(
+            document=document,
+            chunk_index=index,
+            chunk_count=len(text_chunks),
         )
 
         chunks.append(
             DocumentChunk(
                 chunk_id=chunk_id,
-                text=section_text,
+                text=text_chunk,
                 metadata=metadata,
+            )
+        )
+
+    return chunks
+
+
+def chunk_parsed_documents(
+    documents: list[ParsedDocument],
+    chunk_size_words: int = DEFAULT_CHUNK_SIZE_WORDS,
+    chunk_overlap_words: int = DEFAULT_CHUNK_OVERLAP_WORDS,
+) -> list[DocumentChunk]:
+    """
+    Convert multiple ParsedDocument objects into retrieval-ready chunks.
+
+    Args:
+        documents: Parsed documents from loaders.py.
+        chunk_size_words: Maximum number of words per chunk.
+        chunk_overlap_words: Number of overlapping words between chunks.
+
+    Returns:
+        Flat list of DocumentChunk objects.
+    """
+
+    chunks: list[DocumentChunk] = []
+
+    for document in documents:
+        chunks.extend(
+            chunk_parsed_document(
+                document=document,
+                chunk_size_words=chunk_size_words,
+                chunk_overlap_words=chunk_overlap_words,
             )
         )
 

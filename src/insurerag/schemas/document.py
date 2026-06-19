@@ -11,7 +11,7 @@ Chunk-level schemas are defined separately in `schemas.chunk`.
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -68,4 +68,32 @@ class SourceDocument(BaseModel):
     download_date: Optional[str] = Field(
         default=None,
         description="Date when the source document was downloaded.",
+    )
+
+
+
+class ParsedDocument(BaseModel):
+    """
+    Clean document section extracted from a raw source file.
+
+    This object is created after loading/parsing and before chunking.
+
+    Examples:
+    - VVG Section 6
+    - VVG-InfoV Section 1
+    - Internal policy section
+    - Future PDF page or section
+    """
+
+    document_id: str = Field(
+        ...,
+        description="Stable ID for the parsed document section.",
+    )
+    text: str = Field(
+        ...,
+        description="Clean text content of the parsed document section.",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Metadata needed for citation, filtering, and chunking.",
     )
