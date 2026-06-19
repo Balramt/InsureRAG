@@ -29,7 +29,7 @@ def load_markdown_file(file_path: Path) -> str:
     if not file_path.exists():
         raise FileNotFoundError(f"Markdown file not found: {file_path}")
 
-    if file_path.suffix != ".md":
+    if file_path.suffix.lower() != ".md":
         raise ValueError(f"Expected a Markdown file, got: {file_path}")
 
     return file_path.read_text(encoding="utf-8")
