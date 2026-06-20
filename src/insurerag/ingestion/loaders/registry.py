@@ -7,7 +7,7 @@ This module selects the correct loader based on SourceSpec.parser_type.
 from insurerag.ingestion.sources import OFFICIAL_SOURCES, SourceSpec
 from insurerag.schemas.document import ParsedDocument
 
-from .html_loader import load_bafin_article_html, load_vvg_english_html
+from .html_loader_old import load_bafin_article_html, load_vvg_english_html
 
 
 def load_source(source: SourceSpec) -> list[ParsedDocument]:

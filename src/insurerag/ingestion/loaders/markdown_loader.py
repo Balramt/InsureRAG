@@ -9,8 +9,6 @@ Markdown-specific parsing belongs here, not in chunkers.py.
 import re
 from pathlib import Path
 from typing import Any
-
-from insurerag.ingestion.metadata import parse_markdown_front_matter
 from insurerag.schemas.document import ParsedDocument
 
 from .utils import slugify, validate_required_metadata
@@ -67,6 +65,47 @@ def _extract_markdown_title(markdown_body: str) -> str | None:
             return stripped_line.replace("#", "", 1).strip()
 
     return None
+
+
+def parse_markdown_front_matter(markdown_text: str) -> tuple[dict[str, str], str]:
+    """
+    Extract front matter metadata from a Markdown document.
+
+    Args:
+        markdown_text: Raw Markdown document text.
+
+    Returns:
+        A tuple containing:
+        - metadata dictionary extracted from front matter,
+        - Markdown body without the front matter.
+
+    If no valid front matter is found, an empty metadata dictionary
+    and the original Markdown text are returned.
+    """
+
+    stripped_text = markdown_text.lstrip()
+
+    if not stripped_text.startswith("---"):
+        return {}, markdown_text
+
+    parts = stripped_text.split("---", maxsplit=2)
+
+    if len(parts) < 3:
+        return {}, markdown_text
+
+    raw_metadata = parts[1].strip()
+    body = parts[2].strip()
+
+    metadata: dict[str, str] = {}
+
+    for line in raw_metadata.splitlines():
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", maxsplit=1)
+        metadata[key.strip()] = value.strip()
+
+    return metadata, body
 
 
 def _split_markdown_body_by_sections(markdown_body: str) -> list[tuple[str, str]]:
